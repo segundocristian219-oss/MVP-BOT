@@ -193,38 +193,15 @@ if (m.isGroup) {
     }
 }
 
-const prefixes = Array.isArray(global.prefix)
-  ? global.prefix
-  : [global.prefix]
-
-const isCommand =
-  typeof m.text === 'string' &&
-  prefixes.some(p => typeof p === 'string' && m.text.startsWith(p))
-
+const ___dirname = path.join(path.dirname(fileURLToPath(import.meta.url)), "plugins")
 for (const name in global.plugins) {
-  const plugin = global.plugins[name]
-  if (!plugin) continue
-  if (plugin.disabled) continue
-
-  // 🔥 optimización correcta
-  if (!isCommand && typeof plugin.all !== "function") continue
-
-  if (typeof plugin.all === "function") {
-    try {
-      await plugin.all.call(this, m, {
-        chatUpdate,
-        __filename: name,   // 👈 importante para sub-carpetas
-        user,
-        chat,
-        settings
-      })
-    } catch (e) {
-      console.error(e)
-    }
-  }
-
-  // 👇 desde aquí sigue tu lógica normal de comandos
-}
+const plugin = global.plugins[name]
+if (!plugin) continue
+if (plugin.disabled) continue
+const __filename = join(___dirname, name)
+if (typeof plugin.all === "function") {
+try {
+await plugin.all.call(this, m, {
 chatUpdate,
 __dirname: ___dirname,
 __filename,
@@ -293,9 +270,10 @@ cmd.test(command) : cmd === command) :
 typeof plugin.command === "string" ?
 plugin.command === command : false
 global.comando = command
-                        
+
 if ((m.id.startsWith("NJX-") || (m.id.startsWith("BAE5") && m.id.length === 16) || (m.id.startsWith("B24E") && m.id.length === 20))) return
-  
+
+
 // Primary by: Alex 🐼
 if (global.db.data.chats[m.chat].primaryBot && global.db.data.chats[m.chat].primaryBot !== this.user.jid) {
 const primaryBotConn = global.conns.find(conn => conn.user.jid === global.db.data.chats[m.chat].primaryBot && conn.ws.socket && conn.ws.socket.readyState !== ws.CLOSED)
