@@ -1,102 +1,105 @@
-const urlRegex = /\b((https?:\/\/|www\.)[^\s/$.?#].[^\s]*)/gi
-const channelRegex = /whatsapp\.com\/channel\/([0-9A-Za-z]{20,24})/i
+const urlRegex = /(?:https?:\/\/)?(?:www\.)?[a-z0-9-]+(?:\.[a-z]{2,})+(?:\/[^\s]*)?/gi
+const channelRegex = /(?:https?:\/\/)?(?:www\.)?whatsapp\.com\/channel\/[0-9A-Za-z]{20,24}/i
+const groupInviteRegex = /(?:https?:\/\/)?chat\.whatsapp\.com\/[0-9A-Za-z]{20,24}/i
 
-const allowedDomains = ['instagram.com', 'www.instagram.com', 'ig.me']
-const shorteners = ['bit.ly','tinyurl.com','t.co','shorturl.at','goo.gl','rebrand.ly','is.gd','cutt.ly','linktr.ee','shrtco.de']
+const allowedDomains = new Set([
+  'instagram.com',
+  'ig.me'
+])
 
-export async function before(m, { conn, isAdmin, isBotAdmin }) {
-  if (!m) return true
-  if (m.fromMe || m.id?.startsWith(conn.user.jid) || m.isBaileys) return true
-  if (!m.isGroup) return true
+const shorteners = new Set([
+  'bit.ly',
+  'tinyurl.com',
+  't.co',
+  'shorturl.at',
+  'goo.gl',
+  'rebrand.ly',
+  'is.gd',
+  'cutt.ly',
+  'linktr.ee',
+  'shrtco.de'
+])
 
-  const chat = global.db.data.chats[m.chat]
-  if (!chat?.antiLink) return true
-  if (isAdmin || !isBotAdmin) return true
+function normalize(text = '') {
+  return text
+    .toLowerCase()
+    .replace(/[\u200b-\u200f\u202a-\u202e]/g, '')
+    .replace(/[()\[\]{}<>]/g, '')
+}
 
-  const text = (m.text || '').trim()
-  if (!text) return true
-
-  const links = text.match(urlRegex)
-  const hasChannel = channelRegex.test(text)
-  if (!links && !hasChannel) return true
-
-  global.db.data.users[m.sender] ||= {}
-  global.db.data.users[m.sender].antiLink ||= {}
-  global.db.data.users[m.sender].antiLink[m.chat] ||= 0
-
-  let blocked = hasChannel
-
+function extractDomain(link = '') {
   try {
-    const invite = await conn.groupInviteCode(m.chat)
-    const groupLink = `https://chat.whatsapp.com/${invite}`.toLowerCase()
+    if (!/^https?:\/\//.test(link)) link = 'https://' + link
+    return new URL(link).hostname.replace(/^www\./, '')
+  } catch {
+    return ''
+  }
+}
 
-    if (!blocked && links) {
-      for (const link of links) {
-        const l = link.toLowerCase()
-        if (l.includes(groupLink)) continue
-        if (allowedDomains.some(d => l.includes(d))) continue
-        if (shorteners.some(s => l.includes(s)) || !allowedDomains.some(d => l.includes(d))) {
-          blocked = true
-          break
-        }
+export async function before(m, { conn, isAdmin }) {
+  try {
+    if (m.fromMe || m.isBaileys) return true
+    if (!m.isGroup) return false
+
+    const chat = global.db.data.chats[m.chat]
+    if (!chat?.antiLink) return true
+    if (isAdmin) return true
+
+    const body = normalize(m.text || '')
+    if (!body) return true
+
+    const links = body.match(urlRegex) || []
+    const hasChannel = channelRegex.test(body)
+
+    if (!links.length && !hasChannel) return true
+
+    let groupCode = ''
+    try {
+      groupCode = await conn.groupInviteCode(m.chat)
+    } catch {}
+
+    let violation = false
+
+    for (const raw of links) {
+      const domain = extractDomain(raw)
+      if (!domain) continue
+
+      if (
+        groupCode &&
+        groupInviteRegex.test(raw) &&
+        raw.includes(groupCode)
+      ) continue
+
+      if (allowedDomains.has(domain) || [...allowedDomains].some(d => domain.endsWith(d))) {
+        continue
       }
+
+      if (shorteners.has(domain)) {
+        violation = true
+        break
+      }
+
+      violation = true
+      break
     }
 
-    if (!blocked) return true
+    if (hasChannel) violation = true
 
-    global.db.data.users[m.sender].antiLink[m.chat]++
+    if (!violation) return true
 
-    await conn.sendMessage(m.chat, { delete: m }).catch(() => {})
+    await conn.sendMessage(m.chat, { delete: m.key }).catch(() => {})
 
-    const warns = global.db.data.users[m.sender].antiLink[m.chat]
-
-    if (warns >= 3) {
-      await conn.sendMessage(m.chat, {
-        text: `🚫 @${m.sender.split('@')[0]} alcanzó 3/3 links\n👢 Expulsado`,
+    await conn.sendMessage(
+      m.chat,
+      {
+        text: `🚫 Links no permitidos\n@${m.sender.split('@')[0]}`,
         mentions: [m.sender]
-      }).catch(() => {})
+      }
+    ).catch(() => {})
 
-      await conn.groupParticipantsUpdate(m.chat, [m.sender], 'remove').catch(() => {})
-      global.db.data.users[m.sender].antiLink[m.chat] = 0
-    } else {
-      await conn.sendMessage(m.chat, {
-        text: `⚠️ @${m.sender.split('@')[0]} link no permitido\nAdvertencia ${warns}/3`,
-        mentions: [m.sender]
-      }).catch(() => {})
-    }
   } catch (e) {
-    console.error(e)
+    console.error('AntiLink error:', e)
   }
 
   return true
 }
-
-let handler = async (m, { isAdmin, isOwner }) => {
-  if (!m.isGroup) return
-  if (!isAdmin && !isOwner) return
-
-  const chat = global.db.data.chats[m.chat]
-  const text = (m.text || '').toLowerCase().trim()
-
-  if (text === '.on antilink') {
-    chat.antiLink = true
-    return m.reply('✅ AntiLink activado')
-  }
-
-  if (text === '.off antilink') {
-    chat.antiLink = false
-    return m.reply('❌ AntiLink desactivado')
-  }
-
-  return m.reply(
-    '⚙️ AntiLink\n\n' +
-    '.on antilink\n' +
-    '.off antilink'
-  )
-}
-
-handler.command = /^\.on antilink$|^\.off antilink$/i
-handler.group = true
-handler.admin = true
-
-export default handler
