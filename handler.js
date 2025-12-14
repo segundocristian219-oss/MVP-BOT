@@ -20,6 +20,13 @@ if (!chatUpdate) return
 this.pushMessage(chatUpdate.messages).catch(console.error)
 let m = chatUpdate.messages[chatUpdate.messages.length - 1]
 if (!m) return
+global.processedMessages ||= new Set()
+const msgId = m.key?.id
+if (!msgId) return
+if (global.processedMessages.has(msgId)) return
+global.processedMessages.add(msgId)
+setTimeout(() => global.processedMessages.delete(msgId), 60000)
+if (m.key.fromMe) return
 if (global.db.data == null)
 await global.loadDatabase()
 try {
