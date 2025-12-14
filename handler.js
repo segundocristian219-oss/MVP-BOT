@@ -105,7 +105,7 @@ try {
 const actual = user.name || ""
 const nuevo = m.pushName || await this.getName(m.sender)
 if (typeof nuevo === "string" && nuevo.trim() && nuevo !== actual) user.name = nuevo
-} catch {}
+} catch (e) {}
 const chat = global.db.data.chats[m.chat]
 const settings = global.db.data.settings[this.user.jid]
 const isROwner = [...global.owner.map(v => v.replace(/[^0-9]/g, "") + "@lid")].includes(m.sender)
