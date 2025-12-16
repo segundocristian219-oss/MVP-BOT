@@ -196,7 +196,11 @@ export async function handler(chatUpdate) {
     }
 
 if (m.quoted) {
-  m._quoted = smsg(this, m.quoted) || m.quoted
+  Object.defineProperty(m, '_quoted', {
+    value: smsg(this, m.quoted),
+    enumerable: false,
+    configurable: true
+  })
 }
     const isCommand = typeof m.text === "string" && m.text.length > 0
 
