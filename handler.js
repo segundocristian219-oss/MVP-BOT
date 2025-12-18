@@ -33,7 +33,7 @@ export async function handler(chatUpdate) {
   if (!msgId) return
   if (global.processedMessages.has(msgId)) return
   global.processedMessages.add(msgId)
-  setTimeout(() => global.processedMessages.delete(msgId), 60000)
+  setTimeout(() => global.processedMessages.delete(msgId), 30000)
 
   if (m.key.fromMe) return
   if (global.db.data == null) await global.loadDatabase()
@@ -48,21 +48,11 @@ export async function handler(chatUpdate) {
 
       if (user) {
         if (!("name" in user)) user.name = m.name
-        if (!("genre" in user)) user.genre = ""
-        if (!("birth" in user)) user.birth = ""
-        if (!("marry" in user)) user.marry = ""
-        if (!("description" in user)) user.description = ""
-        if (!("packstickers" in user)) user.packstickers = null
         if (!("premium" in user)) user.premium = false
         if (!("banned" in user)) user.banned = false
         if (!("bannedReason" in user)) user.bannedReason = ""
       } else global.db.data.users[m.sender] = {
         name: m.name,
-        genre: "",
-        birth: "",
-        marry: "",
-        description: "",
-        packstickers: null,
         premium: false,
         banned: false,
         bannedReason: ""
@@ -117,10 +107,9 @@ export async function handler(chatUpdate) {
     const user = global.db.data.users[m.sender]
 
     try {
-      const actual = user.name || ""
-      const nuevo = m.pushName || await this.getName(m.sender)
-      if (typeof nuevo === "string" && nuevo.trim() && nuevo !== actual) {
-        user.name = nuevo
+      if (!user.name) {
+        const nuevo = m.pushName || await this.getName(m.sender)
+        if (typeof nuevo === "string" && nuevo.trim()) user.name = nuevo
       }
     } catch {}
 
@@ -133,24 +122,18 @@ export async function handler(chatUpdate) {
     const isOwners = [this.user.jid, ...global.owner.map(v => v + "@lid")].includes(m.sender)
 
     if (settings.self && !isOwners) return
-
-    if (
-      settings.gponly &&
-      !isOwners &&
-      !m.chat.endsWith("g.us") &&
-      !/code|p|ping|qr|estado|status|infobot|botinfo|report|reportar|invite|join|logout|suggest|help|menu/gim.test(m.text)
-    ) return
+    if (chat.isBanned && !isOwner) return
+    if (chat.isMute && m.text && !isAdmin) return
 
     if (opts["queque"] && m.text && !isPrems) {
       const queque = this.msgqueque
-      const time = 1000 * 5
+      if (queque.length > 10) return
       const previousID = queque[queque.length - 1]
       queque.push(m.id || m.key.id)
-
       setTimeout(() => {
         const index = queque.indexOf(previousID)
         if (index !== -1) queque.splice(index, 1)
-      }, time)
+      }, 5000)
     }
 
     if (m.isBaileys) return
@@ -164,7 +147,9 @@ export async function handler(chatUpdate) {
     let isAdmin = false
     let isBotAdmin = false
 
-    if (m.isGroup) {
+    const isCommand = typeof m.text === "string" && m.text.length > 0
+
+    if (m.isGroup && (isCommand || m.mentionedJid?.length)) {
       try {
         global.groupCache ||= new Map()
         const cached = global.groupCache.get(m.chat)
@@ -195,19 +180,17 @@ export async function handler(chatUpdate) {
       }
     }
 
-if (m.quoted) {
-  Object.defineProperty(m, '_quoted', {
-    value: smsg(this, m.quoted),
-    enumerable: false,
-    configurable: true
-  })
-}
-    const isCommand = typeof m.text === "string" && m.text.length > 0
+    if (m.quoted) {
+      Object.defineProperty(m, "_quoted", {
+        value: smsg(this, m.quoted),
+        enumerable: false,
+        configurable: true
+      })
+    }
 
     for (const name in global.plugins) {
       const plugin = global.plugins[name]
-      if (!plugin) continue
-      if (plugin.disabled) continue
+      if (!plugin || plugin.disabled) continue
       if (!isCommand && !plugin.all) continue
 
       const __filename = join(___dirname, name)
@@ -222,30 +205,65 @@ if (m.quoted) {
             chat,
             settings
           })
-        } catch (err) {
-          console.error(err)
-        }
+        } catch {}
       }
 
-      if (!opts["restrict"])
-        if (plugin.tags && plugin.tags.includes("admin")) continue
+      if (!isCommand) continue
 
-      const pluginPrefix = plugin.customPrefix || conn.prefix || global.prefix
+      const pluginPrefix = plugin.customPrefix ?? global.prefix
       const match = (pluginPrefix instanceof RegExp
         ? [[pluginPrefix.exec(m.text), pluginPrefix]]
         : Array.isArray(pluginPrefix)
-          ? pluginPrefix.map(prefix => {
-              const regex = prefix instanceof RegExp ? prefix : new RegExp(strRegex(prefix))
-              return [regex.exec(m.text), regex]
+          ? pluginPrefix.map(p => {
+              const r = p instanceof RegExp ? p : new RegExp(strRegex(p))
+              return [r.exec(m.text), r]
             })
           : typeof pluginPrefix === "string"
             ? [[new RegExp(strRegex(pluginPrefix)).exec(m.text), new RegExp(strRegex(pluginPrefix))]]
             : [[[], new RegExp]]
-      ).find(prefix => prefix[1])
+      ).find(p => p[1])
 
-      if (typeof plugin.before === "function") {
-        if (await plugin.before.call(this, m, {
+      if (!match || !match[0]) continue
+
+      const noPrefix = m.text.replace(match[0][0], "")
+      let [command, ...args] = noPrefix.trim().split(" ").filter(Boolean)
+      let _args = noPrefix.trim().split(" ").slice(1)
+      let text = _args.join(" ")
+      command = (command || "").toLowerCase()
+
+      const isAccept = plugin.command instanceof RegExp
+        ? plugin.command.test(command)
+        : Array.isArray(plugin.command)
+          ? plugin.command.some(cmd => cmd instanceof RegExp ? cmd.test(command) : cmd === command)
+          : typeof plugin.command === "string"
+            ? plugin.command === command
+            : false
+
+      if (!isAccept) continue
+
+      const fail = plugin.fail || global.dfail
+      const wa = plugin.botAdmin || plugin.admin || plugin.group || plugin.private
+      if (chat.modoadmin && m.isGroup && !isAdmin && !isOwner && wa) return
+
+      if (plugin.rowner && !isROwner) return fail("rowner", m, this)
+      if (plugin.owner && !isOwner) return fail("owner", m, this)
+      if (plugin.premium && !isPrems) return fail("premium", m, this)
+      if (plugin.group && !m.isGroup) return fail("group", m, this)
+      if (plugin.botAdmin && !isBotAdmin) return fail("botAdmin", m, this)
+      if (plugin.admin && !isAdmin) return fail("admin", m, this)
+      if (plugin.private && m.isGroup) return fail("private", m, this)
+
+      m.plugin = name
+
+      try {
+        await plugin.call(this, m, {
           match,
+          usedPrefix: match[0][0],
+          noPrefix,
+          _args,
+          args,
+          command,
+          text,
           conn: this,
           participants,
           groupMetadata,
@@ -263,103 +281,13 @@ if (m.quoted) {
           user,
           chat,
           settings
-        })) continue
+        })
+      } catch (err) {
+        m.error = err
+        console.error(err)
       }
 
-      if (typeof plugin !== "function") continue
-
-      if ((usedPrefix = (match[0] || "")[0])) {
-        const noPrefix = m.text.replace(usedPrefix, "")
-        let [command, ...args] = noPrefix.trim().split(" ").filter(v => v)
-        let _args = noPrefix.trim().split(" ").slice(1)
-        let text = _args.join(" ")
-        command = (command || "").toLowerCase()
-
-        const fail = plugin.fail || global.dfail
-        const isAccept = plugin.command instanceof RegExp
-          ? plugin.command.test(command)
-          : Array.isArray(plugin.command)
-            ? plugin.command.some(cmd => cmd instanceof RegExp ? cmd.test(command) : cmd === command)
-            : typeof plugin.command === "string"
-              ? plugin.command === command
-              : false
-
-        if (!isAccept) continue
-
-        const adminMode = chat.modoadmin || false
-        const wa = plugin.botAdmin || plugin.admin || plugin.group || plugin.private
-
-        if (adminMode && m.isGroup && !isAdmin && !isOwner && wa) return
-
-        if (plugin.rowner && !isROwner) {
-          fail("rowner", m, this)
-          continue
-        }
-
-        if (plugin.owner && !isOwner) {
-          fail("owner", m, this)
-          continue
-        }
-
-        if (plugin.premium && !isPrems) {
-          fail("premium", m, this)
-          continue
-        }
-
-        if (plugin.group && !m.isGroup) {
-          fail("group", m, this)
-          continue
-        }
-
-        if (plugin.botAdmin && !isBotAdmin) {
-          fail("botAdmin", m, this)
-          continue
-        }
-
-        if (plugin.admin && !isAdmin) {
-          fail("admin", m, this)
-          continue
-        }
-
-        if (plugin.private && m.isGroup) {
-          fail("private", m, this)
-          continue
-        }
-
-        m.plugin = name
-
-        try {
-          await plugin.call(this, m, {
-            match,
-            usedPrefix,
-            noPrefix,
-            _args,
-            args,
-            command,
-            text,
-            conn: this,
-            participants,
-            groupMetadata,
-            userGroup,
-            botGroup,
-            isROwner,
-            isOwner,
-            isRAdmin,
-            isAdmin,
-            isBotAdmin,
-            isPrems,
-            chatUpdate,
-            __dirname: ___dirname,
-            __filename,
-            user,
-            chat,
-            settings
-          })
-        } catch (err) {
-          m.error = err
-          console.error(err)
-        }
-      }
+      break
     }
   } catch (err) {
     console.error(err)
@@ -378,13 +306,19 @@ if (m.quoted) {
   }
 }
 
+export function initGroupListener(conn) {
+  conn.ev.on("group-participants.update", update => {
+    if (global.groupCache?.has(update.id)) global.groupCache.delete(update.id)
+  })
+}
+
 global.dfail = (type, m, conn) => {
   const msg = {
     rowner: `*𝖤𝗌𝗍𝖾 𝖢𝗈𝗆𝖺𝗇𝖽𝗈 𝖲𝗈𝗅𝗈 𝖯𝗎𝖾𝖽𝖾 𝖲𝖾𝗋 𝖴𝗌𝖺𝖽𝗈 𝖯𝗈𝗋 𝖬𝗂 𝖢𝗋𝖾𝖺𝖽𝗈𝗋*`,
     owner: `*𝖤𝗌𝗍𝖾 𝖢𝗈𝗆𝖺𝖽𝗈 𝖲𝗈𝗅𝗈 𝖯𝗎𝖾𝖽𝖾 𝖲𝖾𝗋 𝖴𝗍𝗂𝗅𝗂𝗓𝖺𝖽𝗈 𝖯𝗈𝗋 𝖬𝗂 𝖢𝗋𝖾𝖺𝖽𝗈𝗋*`,
     mods: `*𝖤𝗌𝗍𝖾 𝖢𝗈𝗆𝖺𝗇𝖽𝗈 𝖲𝗈𝗅𝗈 𝖯𝗎𝖾𝖽𝖾 𝖲𝖾𝗋 𝖴𝗌𝖺𝗋 𝖽𝖾𝗌𝖺𝗋𝗋𝗈𝗅𝗅𝖺𝖽𝗈𝗋𝖾𝗌 𝖮𝖿𝗂𝖼𝗂𝖺𝗅𝖾𝗌*`,
     premium: `*𝖤𝗌𝗍𝖾 𝖢𝗈𝗆𝖺𝗇𝖽𝗈 𝖲𝗈𝗅𝗈 𝖫𝗈 𝖯𝗎𝖾𝖽𝖾𝗇 𝖴𝗍𝗂𝗅𝗂𝗓𝖺𝗋 𝖴𝗌𝗎𝖺𝗋𝗂𝗈𝗌 𝖯𝗋𝖾𝗆𝗂𝗎𝗆*`,
-    group: `*𝖤𝗌𝗍𝖾 𝖢𝗈𝗆𝖺𝗇𝖽𝗈 𝖲𝗈𝗅𝗈 𝖥𝗎𝗇𝖼𝗂𝗈𝗇𝖺 𝖤𝗇 𝖦𝗋𝗎𝗉𝗈𝗌*`,
+    group: `*𝖤𝗌𝗍𝖾 𝖢𝗈𝗆𝖺𝗇𝖽𝗈 𝖲𝗈𝗅𝗈 𝖥𝗎𝗇𝖼𝗂𝗈𝗇𝖺 𝖤𝗇 𝖦𝗋𝗎𝖯𝗈𝗌*`,
     private: `*𝖤𝗌𝗍𝖾 𝖢𝗈𝗆𝖺𝗇𝖽𝗈 𝖲𝗈𝗅𝗈 𝖲𝖾 𝖯𝗎𝖾𝖽𝖾 𝖮𝖼𝗎𝗉𝖺𝗋 𝖤𝗇 𝖤𝗅 𝖯𝗋𝗂𝗏𝖺𝖽𝗈 𝖣𝖾𝗅 𝖡𝗈𝗍*`,
     admin: `*𝖤𝗌𝗍𝖾 𝖢𝗈𝗆𝖺𝗇𝖽𝗈 𝖲𝗈𝗅𝗈 𝖯𝗎𝖾𝖽𝖾 𝖲𝖾𝗋 𝖴𝗌𝖺𝖽𝗈 𝖯𝗈𝗋 𝖠𝖽𝗆𝗂𝗇𝗂𝗌𝗍𝗋𝖺𝖽𝗈𝗋𝖾𝗌*`,
     botAdmin: `*𝖭𝖾𝖼𝖾𝗌𝗂𝗍𝗈 𝗌𝖾𝗋 𝖠𝖽𝗆𝗂𝗇 𝖯𝖺𝗋𝖺 𝖴𝗌𝖺𝗋 𝖤𝗌𝗍𝖾 𝖢𝗈𝗆𝖺𝗇𝖽𝗈*`,
@@ -392,7 +326,10 @@ global.dfail = (type, m, conn) => {
     restrict: `*𝖤𝗌𝗍𝖾 𝖢𝗈𝗆𝖺𝗇𝖽𝗈 𝖠𝗁 𝖲𝗂𝖽𝗈 𝖣𝖾𝗌𝖺𝖻𝗂𝗅𝗂𝗍𝖺𝖽𝗈 𝖯𝗈𝗋 𝖬𝗂 𝖢𝗋𝖾𝖺𝖽𝗈𝗋*`
   }[type]
 
-  if (msg) return conn.reply(m.chat, msg, m, rcanal).then(_ => m.react("✖️"))
+  if (msg) {
+    m.react("✖️")
+    return conn.reply(m.chat, msg, m, rcanal)
+  }
 }
 
 let file = global.__filename(import.meta.url, true)
