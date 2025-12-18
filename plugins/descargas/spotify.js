@@ -1,116 +1,105 @@
-import axios from "axios"
-import yts from "yt-search"
-import fs from "fs"
-import path from "path"
-import ffmpeg from "fluent-ffmpeg"
-import { promisify } from "util"
-import { pipeline } from "stream"
-import crypto from "crypto"
+"use strict";
 
-const streamPipe = promisify(pipeline)
-const TMP_DIR = path.join(process.cwd(), "tmp")
-if (!fs.existsSync(TMP_DIR)) fs.mkdirSync(TMP_DIR, { recursive: true })
+import axios from "axios";
 
-const CACHE_FILE = path.join(TMP_DIR, "cache.json")
-const SKY_BASE = process.env.API_BASE || "https://api-sky.ultraplus.click"
-const SKY_KEY = process.env.API_KEY || "Russellxz"
-const MAX_FILE_MB = Number(process.env.MAX_FILE_MB) || 99
+// === Config API ===
+const API_BASE = (process.env.API_BASE || "https://api-sky.ultraplus.click").replace(/\/+$/, "");
+const API_KEY  = process.env.API_KEY || "Russellxz";
+const MAX_TIMEOUT = 30000;
 
-let cache = loadCache()
+async function getSpotifyMp3(input) {
+  const endpoint = `${API_BASE}/spotify`;
 
-function saveCache() { try { fs.writeFileSync(CACHE_FILE, JSON.stringify(cache)) } catch{} }
-function loadCache() { try { return JSON.parse(fs.readFileSync(CACHE_FILE, "utf8")) || {} } catch { return {} } }
-function safeUnlink(file) { try { file && fs.existsSync(file) && fs.unlinkSync(file) } catch{} }
-function fileSizeMB(filePath) { try { return fs.statSync(filePath).size / (1024*1024) } catch { return 0 } }
-function validCache(file){ return file && fs.existsSync(file) && fileSizeMB(file) > 0 }
+  const isUrl = /spotify\.com/i.test(input);
+  const body = isUrl ? { url: input } : { query: input };
 
-async function getSkyApiUrl(videoUrl){
-  try{
-    const { data } = await axios.get(`${SKY_BASE}/api/download/yt.php`, {
-      params: { url: videoUrl, format: "audio" },
-      headers: { Authorization: `Bearer ${SKY_KEY}` },
-      timeout: 20000
-    })
-    return data?.data?.audio || data?.audio || data?.url
-  } catch { return null }
-}
+  const { data: res, status: http } = await axios.post(
+    endpoint,
+    body,
+    {
+      headers: {
+        apikey: API_KEY,
+        Authorization: `Bearer ${API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      timeout: MAX_TIMEOUT,
+      validateStatus: () => true,
+    }
+  );
 
-async function downloadFile(url, outPath){
-  const res = await axios.get(url, { responseType: "stream", timeout: 60000 })
-  await streamPipe(res.data, fs.createWriteStream(outPath))
-  return outPath
-}
-
-async function convertToMp3(inputFile){
-  const outFile = inputFile.replace(path.extname(inputFile), ".mp3")
-  await new Promise((resolve, reject) =>
-    ffmpeg(inputFile).audioCodec("libmp3lame").audioBitrate("128k")
-      .format("mp3").on("end", resolve).on("error", reject).save(outFile)
-  )
-  safeUnlink(inputFile)
-  return outFile
-}
-
-async function handlePlay(conn, chatId, text, quoted){
-  if(!text?.trim()) return conn.sendMessage(chatId, { text: "✳️ Usa: .play <término>" }, { quoted })
-
-  // Reacción inicial al mensaje del usuario 🕒
-  await conn.sendMessage(chatId, { react: { text: '🕒', key: quoted.key } })
-
-  // Buscar video
-  let video
-  try{ const res = await yts(text); video = res.videos?.[0] } catch{}
-  if(!video) return conn.sendMessage(chatId, { text: "❌ Sin resultados." }, { quoted })
-
-  const { url: videoUrl, title, thumbnail, seconds } = video
-
-  // Extraer artista
-  let artist = title.includes(" - ") ? title.split(" - ")[0].trim() : "Desconocido"
-
-  // Formato duración mm:ss
-  let mins = Math.floor(seconds / 60)
-  let secs = seconds % 60
-  let durationStr = `${mins}:${secs.toString().padStart(2,"0")}`
-
-  // Mensaje tipo Spotify Downloader (sin link de YouTube)
-  const infoMsg = `*𝚂𝙿𝙾𝚃𝙸𝙵𝚈 𝙳𝙾𝚆𝙽𝙻𝙾𝙰𝙳𝙴𝚁*\n\n🎵 *𝚃𝚒𝚝𝚞𝚕𝚘:* ${title}\n🎤 *𝙰𝚛𝚝𝚒𝚜𝚝a:* ${artist}\n🕒 *𝙳𝚞𝚛𝚊𝚌𝚒ó𝚗:* ${durationStr}`
-  await conn.sendMessage(chatId, { image: { url: thumbnail }, caption: infoMsg }, { quoted })
-
-  // Revisar cache
-  const cached = cache[videoUrl]
-  if(cached && validCache(cached)) {
-    await conn.sendMessage(chatId, { audio: fs.readFileSync(cached), mimetype: "audio/mpeg", fileName: `${title}.mp3` }, { quoted })
-    // Reacción final al mensaje del usuario ✅
-    await conn.sendMessage(chatId, { react: { text: '✅', key: quoted.key } })
-    return
+  let data = res;
+  if (typeof data === "string") {
+    try { data = JSON.parse(data.trim()); }
+    catch { throw new Error("Respuesta no JSON del servidor"); }
   }
 
-  // Descargar audio
-  const mediaUrl = await getSkyApiUrl(videoUrl)
-  if(!mediaUrl) return conn.sendMessage(chatId, { text: "❌ No se pudo obtener el audio." }, { quoted })
+  const ok = data?.status === true || data?.status === "true";
+  if (!ok) throw new Error(data?.message || data?.error || `HTTP ${http}`);
 
-  const tempFile = path.join(TMP_DIR, `${crypto.randomUUID()}.tmp`)
-  try{
-    await downloadFile(mediaUrl, tempFile)
-    const mp3File = await convertToMp3(tempFile)
-    if(fileSizeMB(mp3File) > MAX_FILE_MB) throw new Error("Archivo muy grande")
-    cache[videoUrl] = mp3File
-    saveCache()
-    await conn.sendMessage(chatId, { audio: fs.readFileSync(mp3File), mimetype: "audio/mpeg", fileName: `${title}.mp3` }, { quoted })
-    // Reacción final al mensaje del usuario ✅
-    await conn.sendMessage(chatId, { react: { text: '✅', key: quoted.key } })
-  } catch(e){
-    safeUnlink(tempFile)
-    conn.sendMessage(chatId, { text: `❌ Error al descargar: ${e.message}` }, { quoted })
+  const mp3Url = data.result?.media?.audio;
+  if (!mp3Url) throw new Error("No se encontró el MP3");
+
+  const title  = data.result?.title || "Spotify Track";
+  const artist = data.result?.artist || "Desconocido";
+
+  return { mp3Url, title, artist };
+}
+
+function safeBaseFromTitle(title) {
+  return String(title || "spotify")
+    .slice(0, 70)
+    .replace(/[^A-Za-z0-9_\-.]+/g, "_");
+}
+
+export default async function handler(msg, { conn, args }) {
+  const chatId = msg.key.remoteJid;
+  const pref = global.prefixes?.[0] || ".";
+  const text = (args.join(" ") || "").trim();
+
+  if (!text) {
+    return conn.sendMessage(
+      chatId,
+      {
+        text:
+`✳️ Usa:
+${pref}sp <canción o URL>
+
+Ejemplo:
+${pref}sp bad bunny tití me preguntó`
+      },
+      { quoted: msg }
+    );
+  }
+
+  try {
+    const { mp3Url, title, artist } = await getSpotifyMp3(text);
+
+    await conn.sendMessage(
+      chatId,
+      {
+        audio: { url: mp3Url },
+        mimetype: "audio/mpeg",
+        fileName: `${safeBaseFromTitle(title)} - ${artist}.mp3`,
+        caption: `🎵 ${title}\n👤 ${artist}`
+      },
+      { quoted: msg }
+    );
+
+  } catch (err) {
+    console.error("❌ Error spotify:", err?.message || err);
+
+    let msgTxt = "❌ Ocurrió un error al descargar la canción.";
+    const s = String(err?.message || "");
+
+    if (/api key|unauthorized|forbidden|401/i.test(s))
+      msgTxt = "🔐 API Key inválida o ausente.";
+    else if (/timeout|timed out|502|upstream/i.test(s))
+      msgTxt = "⚠️ Error o timeout del servidor.";
+
+    await conn.sendMessage(chatId, { text: msgTxt }, { quoted: msg });
   }
 }
 
-const handler = async (msg, { conn, text, command }) => {
-  const chatId = msg.key.remoteJid
-  if(command === "spotify") await handlePlay(conn, chatId, text, msg)
-}
-
-handler.help = ["𝖲𝗉𝗈𝗍𝗂𝖿𝗒 <𝗍𝖾𝗑𝗍𝗈>"]
-handler.tags = ["𝖣𝖤𝖲𝖢𝖠𝖱𝖦𝖠𝖲"]
-handler.command = ["spotify"]
-export default handler
+handler.command = ["spotify", "sp"];
+handler.help = ["spotify <canción o url>", "sp <canción o url>"];
+handler.tags = ["descargas"];
