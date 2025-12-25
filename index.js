@@ -298,48 +298,68 @@ return message
 }}
 
 async function connectionUpdate(update) {
-const {connection, lastDisconnect, isNewLogin} = update
-global.stopped = connection
-if (isNewLogin) conn.isInit = true
-const code = lastDisconnect?.error?.output?.statusCode || lastDisconnect?.error?.output?.payload?.statusCode;
-if (code && code !== DisconnectReason.loggedOut && conn?.ws.socket == null) {
-await global.reloadHandler(true).catch(console.error);
-global.timestamp.connect = new Date
+  const { connection, lastDisconnect, isNewLogin } = update
+  global.stopped = connection
+  if (isNewLogin) conn.isInit = true
+
+  const code = lastDisconnect?.error?.output?.statusCode || lastDisconnect?.error?.output?.payload?.statusCode
+  if (code && code !== DisconnectReason.loggedOut && conn?.ws.socket == null) {
+    await global.reloadHandler(true).catch(console.error)
+    global.timestamp.connect = new Date()
+  }
+
+  if (global.db.data == null) loadDatabase()
+
+  if (update.qr != 0 && update.qr != undefined || methodCodeQR) {
+    if (opcion == '1' || methodCodeQR) console.log(chalk.green.bold(`[ ✿ ]  Escanea este código QR`))
+  }
+
+  if (connection === "open") {
+    const userJid = jidNormalizedUser(conn.user.id)
+    const userName = conn.user.name || conn.user.verifiedName || "Desconocido"
+    console.log(chalk.green.bold(`[ ✿ ]  Conectado a: ${userName}`))
+
+    const restarterFile = "./lastRestarter.json"
+    if (fs.existsSync(restarterFile)) {
+      try {
+        const data = JSON.parse(fs.readFileSync(restarterFile, "utf-8"))
+        if (data.chatId) {
+          await conn.sendMessage(data.chatId, { text: "✅ *Angel Bot está en línea nuevamente* 🚀" })
+          console.log(chalk.yellow("📢 Aviso enviado al grupo del reinicio."))
+          fs.unlinkSync(restarterFile)
+        }
+      } catch (error) {
+        console.error("❌ Error leyendo lastRestarter.json:", error)
+      }
+    }
+  }
+
+  let reason = new Boom(lastDisconnect?.error)?.output?.statusCode
+  if (connection === 'close') {
+    if (reason === DisconnectReason.badSession) {
+      console.log(chalk.bold.cyanBright(`\n⚠︎ Sin conexión, borra la session principal del Bot, y conectate nuevamente.`))
+    } else if (reason === DisconnectReason.connectionClosed) {
+      console.log(chalk.bold.magentaBright(`\n♻ Reconectando la conexión del Bot...`))
+      await global.reloadHandler(true).catch(console.error)
+    } else if (reason === DisconnectReason.connectionLost) {
+      console.log(chalk.bold.blueBright(`\n⚠︎ Conexión perdida con el servidor, reconectando el Bot...`))
+      await global.reloadHandler(true).catch(console.error)
+    } else if (reason === DisconnectReason.connectionReplaced) {
+      console.log(chalk.bold.yellowBright(`\nꕥ La conexión del Bot ha sido reemplazada.`))
+    } else if (reason === DisconnectReason.loggedOut) {
+      console.log(chalk.bold.redBright(`\n⚠︎ Sin conexión, borra la session principal del Bot, y conectate nuevamente.`))
+      await global.reloadHandler(true).catch(console.error)
+    } else if (reason === DisconnectReason.restartRequired) {
+      console.log(chalk.bold.cyanBright(`\n♻ Conectando el Bot con el servidor...`))
+      await global.reloadHandler(true).catch(console.error)
+    } else if (reason === DisconnectReason.timedOut) {
+      console.log(chalk.bold.yellowBright(`\n♻ Conexión agotada, reconectando el Bot...`))
+      await global.reloadHandler(true).catch(console.error)
+    } else {
+      console.log(chalk.bold.redBright(`\n⚠︎ Conexión cerrada, conectese nuevamente.`))
+    }
+  }
 }
-if (global.db.data == null) loadDatabase()
-if (update.qr != 0 && update.qr != undefined || methodCodeQR) {
-if (opcion == '1' || methodCodeQR) {
-console.log(chalk.green.bold(`[ ✿ ]  Escanea este código QR`))}
-}
-if (connection === "open") {
-const userJid = jidNormalizedUser(conn.user.id)
-const userName = conn.user.name || conn.user.verifiedName || "Desconocido"
-console.log(chalk.green.bold(`[ ✿ ]  Conectado a: ${userName}`))
-}
-let reason = new Boom(lastDisconnect?.error)?.output?.statusCode
-if (connection === 'close') {
-if (reason === DisconnectReason.badSession) {
-console.log(chalk.bold.cyanBright(`\n⚠︎ Sin conexión, borra la session principal del Bot, y conectate nuevamente.`))
-} else if (reason === DisconnectReason.connectionClosed) {
-console.log(chalk.bold.magentaBright(`\n♻ Reconectando la conexión del Bot...`))
-await global.reloadHandler(true).catch(console.error)
-} else if (reason === DisconnectReason.connectionLost) {
-console.log(chalk.bold.blueBright(`\n⚠︎ Conexión perdida con el servidor, reconectando el Bot...`))
-await global.reloadHandler(true).catch(console.error)
-} else if (reason === DisconnectReason.connectionReplaced) {
-console.log(chalk.bold.yellowBright(`\nꕥ La conexión del Bot ha sido reemplazada.`))
-} else if (reason === DisconnectReason.loggedOut) {
-console.log(chalk.bold.redBright(`\n⚠︎ Sin conexión, borra la session principal del Bot, y conectate nuevamente.`))
-await global.reloadHandler(true).catch(console.error)
-} else if (reason === DisconnectReason.restartRequired) {
-console.log(chalk.bold.cyanBright(`\n♻ Conectando el Bot con el servidor...`))
-await global.reloadHandler(true).catch(console.error)
-} else if (reason === DisconnectReason.timedOut) {
-console.log(chalk.bold.yellowBright(`\n♻ Conexión agotada, reconectando el Bot...`))
-await global.reloadHandler(true).catch(console.error)
-} else {
-console.log(chalk.bold.redBright(`\n⚠︎ Conexión cerrada, conectese nuevamente.`))
-}}}
 process.on('uncaughtException', console.error)
 let isInit = true
 let handler = await import('./handler.js')
@@ -518,41 +538,4 @@ console.log(chalk.bold.red(`\n⚠︎ El archivo ${file} no se logró borrar.\n` 
 console.log(chalk.bold.green(`\n⌦ El archivo ${file} se ha borrado correctamente.`))
 } }) }
 }) }) }) }
-function redefineConsoleMethod(methodName, filterStrings) {
-const originalConsoleMethod = console[methodName]
-console[methodName] = function() {
-const message = arguments[0]
-if (typeof message === 'string' && filterStrings.some(filterString => message.includes(atob(filterString)))) {
-arguments[0] = ""
-}
-originalConsoleMethod.apply(console, arguments)
-}}
-setInterval(async () => {
-if (stopped === 'close' || !conn || !conn.user) return
-await clearTmp()
-console.log(chalk.bold.cyanBright(`\n⌦ Archivos de la carpeta TMP no necesarios han sido eliminados del servidor.`))}, 1000 * 60 * 4)
-setInterval(async () => {
-if (stopped === 'close' || !conn || !conn.user) return
-await purgeSession()
-console.log(chalk.bold.cyanBright(`\n⌦ Archivos de la carpeta ${global.sessions} no necesario han sido eliminados del servidor.`))}, 1000 * 60 * 10)
-setInterval(async () => {
-if (stopped === 'close' || !conn || !conn.user) return
-await purgeSessionSB()}, 1000 * 60 * 10) 
-setInterval(async () => {
-if (stopped === 'close' || !conn || !conn.user) return
-await purgeOldFiles()
-console.log(chalk.bold.cyanBright(`\n⌦ Archivos no necesario han sido eliminados del servidor.`))}, 1000 * 60 * 10)
-_quickTest().catch(console.error)
-async function isValidPhoneNumber(number) {
-try {
-number = number.replace(/\s+/g, '')
-if (number.startsWith('+521')) {
-number = number.replace('+521', '+52');
-} else if (number.startsWith('+52') && number[4] === '1') {
-number = number.replace('+52 1', '+52');
-}
-const parsedNumber = phoneUtil.parseAndKeepRawInput(number)
-return phoneUtil.isValidNumber(parsedNumber)
-} catch (error) {
-return false
-}}
+function redefineConsoleMethod(methodName, filterS
