@@ -1,12 +1,10 @@
 import fs from 'fs'
 import path from 'path'
-import axios from 'axios'
 import FormData from 'form-data'
+import axios from 'axios'
 import ffmpeg from 'fluent-ffmpeg'
-import { fileURLToPath } from 'url'
-
-const __filename = fileURLToPath(import.meta.url)
-const __dirname = path.dirname(__filename)
+import crypto from 'crypto'
+import { fileTypeFromBuffer } from 'file-type'
 
 function unwrapMessage(m) {
   let n = m
@@ -32,133 +30,141 @@ function ensureWA(wa, conn) {
   return null
 }
 
-function findMedia(msg) {
-  if (!msg) return null
-  if (msg.imageMessage) return { type: 'image', media: msg.imageMessage }
-  if (msg.videoMessage) return { type: 'video', media: msg.videoMessage }
-  if (msg.stickerMessage) return { type: 'sticker', media: msg.stickerMessage }
-  if (msg.audioMessage) return { type: 'audio', media: msg.audioMessage }
-
-  const ctx = msg.extendedTextMessage?.contextInfo
-  if (ctx?.quotedMessage) {
-    const q = unwrapMessage(ctx.quotedMessage)
-    return findMedia(q)
-  }
-
-  if (ctx?.thumbnail) {
-    return {
-      type: 'image',
-      media: {
-        mimetype: 'image/jpeg',
-        jpegThumbnail: ctx.thumbnail
-      }
-    }
-  }
-  return null
-}
-
 function extFromMime(mime, fallback = 'bin') {
   if (!mime) return fallback
   const m = mime.toLowerCase()
-  if (m.includes('image/')) {
-    if (m.includes('jpeg')) return 'jpg'
-    if (m.includes('png')) return 'png'
-    if (m.includes('webp')) return 'webp'
-    return 'jpg'
-  }
-  if (m.includes('video/')) {
-    if (m.includes('mp4')) return 'mp4'
-    if (m.includes('3gpp')) return '3gp'
-    if (m.includes('webm')) return 'webm'
-    return 'mp4'
-  }
-  if (m.includes('audio/')) {
-    if (m.includes('mpeg') || m.includes('mp3')) return 'mp3'
-    if (m.includes('ogg')) return 'ogg'
-    if (m.includes('opus')) return 'opus'
-    if (m.includes('aac')) return 'aac'
-    if (m.includes('wav')) return 'wav'
-    if (m.includes('x-m4a') || m.includes('m4a')) return 'm4a'
-    if (m.includes('amr')) return 'amr'
-    return 'mp3'
-  }
-  if (m.includes('application/pdf')) return 'pdf'
+  if (m.includes('image/')) return 'jpg'
+  if (m.includes('video/')) return 'mp4'
+  if (m.includes('audio/')) return 'mp3'
+  if (m.includes('pdf')) return 'pdf'
   return fallback
 }
 
-const handler = async (msg, { conn, command, wa }) => {
+async function uploadToCatbox(filePath) {
+  const buffer = await fs.promises.readFile(filePath)
+  const { ext, mime } = await fileTypeFromBuffer(buffer) || {}
+  const random = crypto.randomBytes(5).toString('hex')
+  const filename = `${random}.${ext || 'bin'}`
+
+  const form = new FormData()
+  form.append('reqtype', 'fileupload')
+  form.append('fileToUpload', buffer, {
+    filename,
+    contentType: mime || 'application/octet-stream'
+  })
+
+  const res = await axios.post(
+    'https://catbox.moe/user/api.php',
+    form,
+    {
+      headers: form.getHeaders(),
+      maxContentLength: Infinity,
+      maxBodyLength: Infinity
+    }
+  )
+
+  if (!res.data) throw new Error('Catbox no devolvió URL')
+  return res.data.trim()
+}
+
+let handler = async (msg, { conn, command, wa }) => {
   const chatId = msg.key.remoteJid
-  const pref = global.prefixes?.[0] || "."
+  const pref = global.prefixes?.[0] || '.'
 
-  const baseMsg = unwrapMessage(msg.message)
-  const detected = findMedia(baseMsg)
+  const ctx = msg.message?.extendedTextMessage?.contextInfo
+  const rawQuoted = ctx?.quotedMessage
+  const quoted = rawQuoted ? unwrapMessage(rawQuoted) : null
 
-  if (!detected) {
-    return conn.sendMessage(chatId, {
-      text: `✳️ Usa:\n${pref}${command}\nResponde a una imagen, video, sticker o audio.`
-    }, { quoted: msg })
+  if (!quoted) {
+    return conn.sendMessage(
+      chatId,
+      { text: `✳️ Usa:\n${pref}${command}\nResponde a una imagen, video, sticker o audio` },
+      { quoted: msg }
+    )
   }
 
   await conn.sendMessage(chatId, { react: { text: '☁️', key: msg.key } })
 
-  let rawPath = null
-  let finalPath = null
+  let rawPath
+  let finalPath
 
   try {
-    const WA = ensureWA(wa, conn)
-    if (!WA) throw new Error("No se pudo acceder a Baileys.")
+    let type
+    let media
 
-    const tmpDir = path.join(__dirname, 'tmp')
+    if (quoted.imageMessage) {
+      type = 'image'
+      media = quoted.imageMessage
+    } else if (quoted.videoMessage) {
+      type = 'video'
+      media = quoted.videoMessage
+    } else if (quoted.stickerMessage) {
+      type = 'sticker'
+      media = quoted.stickerMessage
+    } else if (quoted.audioMessage) {
+      type = 'audio'
+      media = quoted.audioMessage
+    } else {
+      throw new Error('Tipo no permitido')
+    }
+
+    const WA = ensureWA(wa, conn)
+    if (!WA) throw new Error('Baileys no disponible')
+
+    const tmpDir = path.join(path.dirname(new URL(import.meta.url).pathname), 'tmp')
     if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true })
 
-    const ext = detected.type === 'sticker'
-      ? 'webp'
-      : extFromMime(detected.media.mimetype, detected.type === 'image' ? 'jpg' : detected.type)
+    const ext = type === 'sticker' ? 'webp' : extFromMime(media.mimetype)
+    rawPath = path.join(tmpDir, `${Date.now()}.${ext}`)
 
-    rawPath = path.join(tmpDir, `${Date.now()}_input.${ext}`)
+    const stream = await WA.downloadContentFromMessage(
+      media,
+      type === 'sticker' ? 'sticker' : type
+    )
 
-    if (detected.media.jpegThumbnail) {
-      fs.writeFileSync(rawPath, detected.media.jpegThumbnail)
-    } else {
-      const stream = await WA.downloadContentFromMessage(
-        detected.media,
-        detected.type === 'sticker' ? 'sticker' : detected.type
-      )
-      const ws = fs.createWriteStream(rawPath)
-      for await (const chunk of stream) ws.write(chunk)
-      ws.end()
-      await new Promise(r => ws.on('finish', r))
-    }
+    const ws = fs.createWriteStream(rawPath)
+    for await (const chunk of stream) ws.write(chunk)
+    ws.end()
+    await new Promise(r => ws.on('finish', r))
+
+    const size = fs.statSync(rawPath).size
+    if (size > 200 * 1024 * 1024) throw new Error('Archivo supera 200MB')
 
     finalPath = rawPath
 
-    const form = new FormData()
-    form.append('file', fs.createReadStream(finalPath))
+    if (type === 'audio' && ext !== 'mp3') {
+      finalPath = path.join(tmpDir, `${Date.now()}_audio.mp3`)
+      await new Promise((res, rej) => {
+        ffmpeg(rawPath)
+          .audioCodec('libmp3lame')
+          .toFormat('mp3')
+          .on('end', res)
+          .on('error', rej)
+          .save(finalPath)
+      })
+      fs.unlinkSync(rawPath)
+    }
 
-    const res = await axios.post('https://cdn.russellxz.click/upload.php', form, {
-      headers: form.getHeaders(),
-      maxContentLength: Infinity,
-      maxBodyLength: Infinity
-    })
+    const url = await uploadToCatbox(finalPath)
 
-    if (!res.data?.url) throw new Error('No se pudo subir.')
-
-    await conn.sendMessage(chatId, {
-      text: `➤ 𝖮𝖱𝖣𝖤𝖭 𝖤𝖩𝖤𝖢𝖴𝖳𝖠𝖣𝖠 ✅
-
-𝖠𝖱𝖢𝖧𝖨𝖵𝖮 𝖲𝖴𝖡𝖨𝖣𝖮 𝖢𝖮𝖱𝖱𝖤𝖢𝖳𝖠𝖬𝖤𝖭𝖳𝖤. 𝖠𝖰𝖴𝖨 𝖳𝖨𝖤𝖭𝖤 𝖲𝖴 𝖴𝖱𝖫:\n${res.data.url}`
-    }, { quoted: msg })
+    await conn.sendMessage(
+      chatId,
+      { text: `✅ Archivo subido a Catbox\n\n${url}` },
+      { quoted: msg }
+    )
 
     await conn.sendMessage(chatId, { react: { text: '✅', key: msg.key } })
 
-  } catch (err) {
-    await conn.sendMessage(chatId, {
-      text: `❌ Error: ${err.message || err}`
-    }, { quoted: msg })
+  } catch (e) {
+    await conn.sendMessage(
+      chatId,
+      { text: `❌ Error\n${e.message}` },
+      { quoted: msg }
+    )
     await conn.sendMessage(chatId, { react: { text: '❌', key: msg.key } })
   } finally {
-    try { if (finalPath && fs.existsSync(finalPath)) fs.unlinkSync(finalPath) } catch {}
-    try { if (rawPath && fs.existsSync(rawPath)) fs.unlinkSync(rawPath) } catch {}
+    try { if (rawPath) fs.unlinkSync(rawPath) } catch {}
+    try { if (finalPath && finalPath !== rawPath) fs.unlinkSync(finalPath) } catch {}
   }
 }
 
