@@ -67,7 +67,7 @@ const handler = async (m, { conn, participants }) => {
   const content = getMessageText(m);
   if (!/^\.?n(\s|$)/i.test(content.trim())) return;
 
-  await conn.sendMessage(m.chat, { react: { text: '🗣️', key: m.key } });
+  await conn.sendMessage(m.chat, { react: { text: 'Ⓜ️', key: m.key } });
 
   const seen = new Set();
   const users = [];
@@ -91,7 +91,7 @@ const handler = async (m, { conn, participants }) => {
 
   const userText = content.trim().replace(/^\.?n(\s|$)/i, '');
   const originalCaption = (q.msg?.caption || q.text || '').trim();
-  const finalCaption = userText || originalCaption || '🔊 Notificación';
+  const finalCaption = userText || originalCaption || 'Ⓜ️ Notificación';
 
   try {
 
@@ -170,7 +170,7 @@ const handler = async (m, { conn, participants }) => {
 
     return await conn.sendMessage(
       m.chat,
-      { text: '🔊 Notificación', mentions: users },
+      { text: 'Ⓜ️ Notificación', mentions: users },
       { quoted: fkontak }
     );
   }
